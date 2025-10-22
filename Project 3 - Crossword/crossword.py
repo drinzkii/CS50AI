@@ -1,224 +1,133 @@
-import sys
-from collections import deque
-from crossword import Crossword, Variable
+class Variable():
 
-class CrosswordCreator():
-    """
-    Crossword puzzle solver using CSP with backtracking and AC-3.
-    """
+    ACROSS = "across"
+    DOWN = "down"
 
-    def __init__(self, crossword: Crossword):
-        self.crossword = crossword
+    def __init__(self, i, j, direction, length):
+        """Create a new variable with starting point, direction, and length."""
+        self.i = i
+        self.j = j
+        self.direction = direction
+        self.length = length
+        self.cells = []
+        for k in range(self.length):
+            self.cells.append(
+                (self.i + (k if self.direction == Variable.DOWN else 0),
+                 self.j + (k if self.direction == Variable.ACROSS else 0))
+            )
 
-        # Domains: mapping variable -> set of possible words
-        self.domains = {
-            var: set(self.crossword.words)
-            for var in self.crossword.variables
-        }
+    def __hash__(self):
+        return hash((self.i, self.j, self.direction, self.length))
 
-    def enforce_node_consistency(self):
-        """
-        Make each variable node-consistent:
-        remove any word from a variable's domain that is not the correct length.
-        """
-        for var in list(self.domains.keys()):
-            for word in set(self.domains[var]):
-                if len(word) != var.length:
-                    self.domains[var].remove(word)
+    def __eq__(self, other):
+        return (
+            (self.i == other.i) and
+            (self.j == other.j) and
+            (self.direction == other.direction) and
+            (self.length == other.length)
+        )
 
-    def revise(self, x: Variable, y: Variable) -> bool:
-        """
-        Make variable x arc-consistent with variable y.
-        Remove values from self.domains[x] that have no possible compatible value in self.domains[y].
+    def __str__(self):
+        return f"({self.i}, {self.j}) {self.direction} : {self.length}"
 
-        Return True if a revision was made (i.e., some value was removed), else False.
-        """
-        revised = False
-        overlap = self.crossword.overlaps.get((x, y))
-        if overlap is None:
-            return False
+    def __repr__(self):
+        direction = repr(self.direction)
+        return f"Variable({self.i}, {self.j}, {direction}, {self.length})"
 
-        i, j = overlap
-        to_remove = set()
-        for word_x in self.domains[x]:
-            # if no word_y in domain[y] matches at overlap character, mark for removal
-            has_support = False
-            for word_y in self.domains[y]:
-                if word_x[i] == word_y[j]:
-                    has_support = True
-                    break
-            if not has_support:
-                to_remove.add(word_x)
 
-        if to_remove:
-            for w in to_remove:
-                self.domains[x].remove(w)
-            revised = True
+class Crossword():
 
-        return revised
+    def __init__(self, structure_file, words_file):
 
-    def ac3(self, arcs=None) -> bool:
-        """
-        AC-3 algorithm. If arcs is None, initialize with all arcs (x,y) where x != y and overlap exists.
-        Otherwise, start with provided arcs (list of (x,y) tuples).
-        Return False if any domain becomes empty; True otherwise.
-        """
-        queue = deque()
-        if arcs is None:
-            # all arcs where there is an overlap
-            for x in self.crossword.variables:
-                for y in self.crossword.neighbors(x):
-                    queue.append((x, y))
-        else:
-            for arc in arcs:
-                queue.append(arc)
+        # Determine structure of crossword
+        with open(structure_file) as f:
+            contents = f.read().splitlines()
+            self.height = len(contents)
+            self.width = max(len(line) for line in contents)
 
-        while queue:
-            x, y = queue.popleft()
-            if self.revise(x, y):
-                if len(self.domains[x]) == 0:
-                    return False
-                # add all neighbors z of x, except y, back to queue
-                for z in self.crossword.neighbors(x):
-                    if z != y:
-                        queue.append((z, x))
-        return True
+            self.structure = []
+            for i in range(self.height):
+                row = []
+                for j in range(self.width):
+                    if j >= len(contents[i]):
+                        row.append(False)
+                    elif contents[i][j] == "_":
+                        row.append(True)
+                    else:
+                        row.append(False)
+                self.structure.append(row)
 
-    def assignment_complete(self, assignment: dict) -> bool:
-        """Return True if assignment assigns every variable."""
-        return set(assignment.keys()) == set(self.crossword.variables)
+        # Save vocabulary list
+        with open(words_file) as f:
+            self.words = set(f.read().upper().splitlines())
 
-    def consistent(self, assignment: dict) -> bool:
-        """
-        Check if assignment is consistent:
-        - All assigned words are unique.
-        - Each word has correct length.
-        - No conflicting letters at overlaps.
-        """
-        # All values distinct
-        if len(set(assignment.values())) != len(assignment):
-            return False
+        # Determine variable set
+        self.variables = set()
+        for i in range(self.height):
+            for j in range(self.width):
 
-        for var, word in assignment.items():
-            # correct length
-            if len(word) != var.length:
-                return False
+                # Vertical words
+                starts_word = (
+                    self.structure[i][j]
+                    and (i == 0 or not self.structure[i - 1][j])
+                )
+                if starts_word:
+                    length = 1
+                    for k in range(i + 1, self.height):
+                        if self.structure[k][j]:
+                            length += 1
+                        else:
+                            break
+                    if length > 1:
+                        self.variables.add(Variable(
+                            i=i, j=j,
+                            direction=Variable.DOWN,
+                            length=length
+                        ))
 
-            # check overlaps with assigned neighbors
-            for neighbor in self.crossword.neighbors(var):
-                if neighbor in assignment:
-                    overlap = self.crossword.overlaps.get((var, neighbor))
-                    if overlap is None:
-                        continue
-                    i, j = overlap
-                    if word[i] != assignment[neighbor][j]:
-                        return False
-        return True
+                # Horizontal words
+                starts_word = (
+                    self.structure[i][j]
+                    and (j == 0 or not self.structure[i][j - 1])
+                )
+                if starts_word:
+                    length = 1
+                    for k in range(j + 1, self.width):
+                        if self.structure[i][k]:
+                            length += 1
+                        else:
+                            break
+                    if length > 1:
+                        self.variables.add(Variable(
+                            i=i, j=j,
+                            direction=Variable.ACROSS,
+                            length=length
+                        ))
 
-    def order_domain_values(self, var: Variable, assignment: dict):
-        """
-        Return list of domain values for var ordered by least-constraining value heuristic.
-        """
-        values = list(self.domains[var])
-
-        def ruled_out_count(value):
-            count = 0
-            for neighbor in self.crossword.neighbors(var):
-                if neighbor in assignment:
+        # Compute overlaps for each word
+        # For any pair of variables v1, v2, their overlap is either:
+        #    None, if the two variables do not overlap; or
+        #    (i, j), where v1's ith character overlaps v2's jth character
+        self.overlaps = dict()
+        for v1 in self.variables:
+            for v2 in self.variables:
+                if v1 == v2:
                     continue
-                overlap = self.crossword.overlaps.get((var, neighbor))
-                if overlap is None:
-                    continue
-                i, j = overlap
-                # count neighbor domain values that would be incompatible
-                for w in self.domains[neighbor]:
-                    if value[i] != w[j]:
-                        count += 1
-            return count
+                cells1 = v1.cells
+                cells2 = v2.cells
+                intersection = set(cells1).intersection(cells2)
+                if not intersection:
+                    self.overlaps[v1, v2] = None
+                else:
+                    intersection = intersection.pop()
+                    self.overlaps[v1, v2] = (
+                        cells1.index(intersection),
+                        cells2.index(intersection)
+                    )
 
-        values.sort(key=ruled_out_count)
-        return values
-
-    def select_unassigned_variable(self, assignment: dict):
-        """
-        Select an unassigned variable using MRV, then degree heuristic.
-        """
-        unassigned = [v for v in self.crossword.variables if v not in assignment]
-
-        # MRV: fewest remaining values in domain
-        # Degree heuristic tie-breaker: most neighbors
-        def sort_key(v):
-            return (len(self.domains[v]), -len(self.crossword.neighbors(v)))
-
-        unassigned.sort(key=sort_key)
-        return unassigned[0] if unassigned else None
-
-    def backtrack(self, assignment: dict):
-        """
-        Backtracking search to find a complete assignment. Returns assignment or None.
-        """
-        if self.assignment_complete(assignment):
-            return assignment
-
-        var = self.select_unassigned_variable(assignment)
-
-        for value in self.order_domain_values(var, assignment):
-            # create new assignment
-            assignment[var] = value
-            if self.consistent(assignment):
-                # preserve domains to restore later
-                domains_backup = {v: set(self.domains[v]) for v in self.domains}
-                # assign var to single value in domains and run AC-3 to propagate constraints
-                self.domains[var] = {value}
-
-                # initial arcs: all (neighbor, var)
-                arcs = [(neighbor, var) for neighbor in self.crossword.neighbors(var)]
-                if self.ac3(arcs):
-                    result = self.backtrack(assignment)
-                    if result is not None:
-                        return result
-
-                # restore domains if failure
-                self.domains = domains_backup
-
-            # remove assignment for var and try next value
-            assignment.pop(var, None)
-
-        return None
-
-    def solve(self):
-        """
-        Solve the crossword: enforce node consistency, AC-3, then backtrack.
-        Returns a complete assignment or None.
-        """
-        # Node consistency
-        self.enforce_node_consistency()
-
-        # AC-3 initially
-        if not self.ac3():
-            return None
-
-        # Backtracking search
-        return self.backtrack(dict())
-
-
-def main():
-    if len(sys.argv) not in [3, 4]:
-        print("Usage: python generate.py structure.txt words.txt [output.png]")
-        sys.exit(1)
-
-    structure, words = sys.argv[1], sys.argv[2]
-    crossword = Crossword(structure, words)
-    creator = CrosswordCreator(crossword)
-    solution = creator.solve()
-
-    if solution is None:
-        print("No solution.")
-    else:
-        # Print assignment: variable -> word
-        for var, word in solution.items():
-            print(f"{var.direction} at ({var.i},{var.j}) length {var.length}: {word}")
-
-
-if __name__ == "__main__":
-    main()
+    def neighbors(self, var):
+        """Given a variable, return set of overlapping variables."""
+        return set(
+            v for v in self.variables
+            if v != var and self.overlaps[v, var]
+        )
